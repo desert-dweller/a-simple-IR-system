@@ -3,6 +3,7 @@ from collections import Counter
 
 import numpy as np
 import pandas as pd
+from natsort import natsorted
 from nltk.stem import PorterStemmer
 from nltk.tokenize import word_tokenize
 
@@ -10,6 +11,7 @@ unique_terms = set()
 document_names = []
 word_dictionary = []
 query_dictionary = []
+document_idf = pd.DataFrame()
 
 
 # PREPROCESSING
@@ -22,18 +24,25 @@ def preprocessing(lines, dictionary):
     return stemmed_tokens
 
 
+def count_docs(terms, dictionary):
+    unique_terms.update(terms)
+    document_dictionary = dict(Counter(terms))
+    dictionary.append(document_dictionary)
+    # for word in terms:
+    #     word_dictionary[word] += 1
+
+
 def read_file(file):
     with open(f'docs/{file}', 'r') as f:
         lines = f.read()
         document_names.append(file[:-4])
-        print(document_names)
         return lines
 
 
 def build_positional_index(path):
     # Initialize the positional index
     positional_index = {}
-    for doc_id, file in enumerate(os.listdir(path)):
+    for doc_id, file in enumerate(natsorted(os.listdir(path))):
         lines = read_file(file)
         terms = preprocessing(lines, word_dictionary)
 
@@ -51,95 +60,128 @@ def build_positional_index(path):
             positional_index[token][0] += 1
             positional_index[token][1][doc_id] = term_positions + [i]
 
-    print(positional_index)
-    normalized_doc_df = tf(word_dictionary, document_names)
+    print('\n', 'Unique Set of Terms', sep='')
+    print("-" * 50)
+    print(unique_terms, '\n')
+
+    # making the positional index a dataframe to print it out clearer
+    temp = pd.DataFrame(positional_index, index=['document frequency', 'positional posting lists'], )
+    print("Positional Index")
+    print("-" * 50)
+    print(temp.transpose(), '\n')
+    normalized_doc_df = tf(word_dictionary, 'Document')
     return positional_index, normalized_doc_df
+
+
+def tf(terms_dictionary, document_type):
+    global document_idf
+    if document_type == 'Document':
+        index = document_names
+        N = len(document_names)
+    else:
+        index = ['tf-raw']
+        N = len(terms_dictionary[0])
+
+    print('\n', "*" * 100, sep='')
+    print("\t" * 10, document_type)
+    print("*" * 100, '\n')
+
+    term_frequency_df = pd.DataFrame(terms_dictionary, index=index)
+    term_frequency_df.fillna(0, inplace=True)
+    term_frequency_df = term_frequency_df.transpose()
+
+    #
+    weighted_tf_df = term_frequency_df.applymap(weighted)
+
+    doc_frequency = term_frequency_df.sum(axis=1)
+    if document_type == 'Document':
+        idf = np.log10(N / doc_frequency)
+    else:
+        # get the idf values of the terms in the query
+        idf = document_idf.loc[term_frequency_df.index, 'idf']
+
+    inverse_doc_freq = pd.concat([doc_frequency, idf], axis=1)
+    inverse_doc_freq.columns = ['df', 'idf']
+
+    tf_idf = term_frequency_df.multiply(idf, axis=0)
+
+    doc_length = np.sqrt((tf_idf ** 2).sum())
+
+    normalized_tf_idf = tf_idf / doc_length
+
+    if document_type == 'Query':
+        query_df = pd.concat([term_frequency_df, weighted_tf_df, idf, term_frequency_df, normalized_tf_idf], axis=1)
+        query_df.columns = ['tf-raw', 'weighted-tf', 'idf', 'tf-idf', 'normalized']
+        print(f"Normalized {document_type} TF-IDF Matrix")
+        print("-" * 50)
+        print(query_df)
+        print("query length:", doc_length.values, '\n')
+        return query_df
+    else:
+        print("Term Frequency Matrix")
+        print("-" * 50)
+        print(term_frequency_df, '\n')
+        print("Weighted Term Frequency (1+log(tf)) Matrix")
+        print("-" * 50)
+        print(weighted_tf_df, '\n')
+        print(f"Inverse {document_type} Frequency (IDF) Matrix")
+        print("-" * 50)
+        print(inverse_doc_freq, '\n')
+        print("TF-IDF Matrix")
+        print("-" * 50)
+        print(tf_idf.to_string(), '\n')
+        print("Document Lengths")
+        print("-" * 50)
+        print(doc_length.to_string(), '\n')
+        print(f"Normalized {document_type} TF-IDF Matrix")
+        print("-" * 50)
+        print(normalized_tf_idf.to_string(), '\n')
+        document_idf = inverse_doc_freq
+        return normalized_tf_idf
 
 
 def put_query(q, positional_index):
     matches = [[] for i in range(10)]
     q = preprocessing(q, query_dictionary)
     for term in q:
-        print(term)
         if term in positional_index.keys():
-            for key in positional_index[term][1].keys():
-                # print(key)
-                # print(positional_index[term][1])
-                if matches[key]:
-                    print(matches)
-                    print(positional_index[term][1][key][0])
-                    if matches[key][-1] == positional_index[term][1][key][0] - 1:
-                        print(matches[key])
-                        matches[key].append(positional_index[term][1][key][0])
+            for doc_id in positional_index[term][1].keys():
+                if matches[doc_id]:
+                    if matches[doc_id][-1] == positional_index[term][1][doc_id][0] - 1:
+                        matches[doc_id].append(positional_index[term][1][doc_id][0])
                 else:
-                    matches[key].append(positional_index[term][1][key][0])
-                print(matches)
+                    matches[doc_id].append(positional_index[term][1][doc_id][0])
 
     matched_docs = []
     for pos, list in enumerate(matches, start=0):
         if len(list) == len(q):
             matched_docs.append(document_names[pos])
 
-    query_df = tf(query_dictionary)
+    query_df = tf(query_dictionary, 'Query')
     return matched_docs, query_df
 
 
-def count_docs(terms, dictionary):
-    unique_terms.update(terms)
-    document_dictionary = dict(Counter(terms))
-    dictionary.append(document_dictionary)
-    # for word in terms:
-    #     word_dictionary[word] += 1
-    print(word_dictionary)
-
-
-def tf(terms_dictionary, index=["tf-raw"]):
-    print(terms_dictionary, index)
-    term_frequency_df = pd.DataFrame(terms_dictionary, index=index)
-    term_frequency_df.fillna(0, inplace=True)
-    term_frequency_df = term_frequency_df.transpose()
-    print(term_frequency_df)
-    #
-    weighted_tf_df = term_frequency_df.applymap(weighted)
-    print(weighted_tf_df)
-
-    doc_frequency = term_frequency_df.sum(axis=1)
-    idf = len(document_names) / doc_frequency
-
-    inverse_doc_freq = pd.concat([doc_frequency, idf], axis=1)
-    inverse_doc_freq.columns = ['df', 'idf']
-    print(inverse_doc_freq)
-
-    tf_idf = term_frequency_df.multiply(idf, axis=0)
-    print(tf_idf)
-
-    doc_length = np.sqrt((tf_idf ** 2).sum())
-    print(doc_length)
-
-    normalized_tf_idf = tf_idf / doc_length
-    print(normalized_tf_idf)
-
-    if index[0] == 'tf-raw':
-        query_df = pd.concat([term_frequency_df, weighted_tf_df, idf, term_frequency_df, normalized_tf_idf], axis=1)
-        query_df.columns = ['tf-raw', 'weighted-tf', 'idf', 'tf-idf', 'normalized']
-        print("query length:", doc_length)
-        print(query_df)
-        return query_df
-
-    return normalized_tf_idf
-
-
 def similarity(query_df, normalized_tf_idf, matched_docs):
+    print('\n', "*" * 100, sep='')
+    print("\t" * 10, "Post-Query")
+    print("*" * 100, '\n')
+
     query_terms = query_df.index
     matched_docs_df = normalized_tf_idf.loc[query_terms, matched_docs]
-    print(matched_docs_df)
+    print("Matched Documents")
+    print("-" * 50)
+    print(matched_docs_df.columns.values, '\n')
 
     query_normalized = query_df.loc[:, 'normalized']
     product_df = matched_docs_df.multiply(query_normalized, axis=0)
-    print(product_df)
+    print("Product (Query * Matched Documents) Matrix")
+    print("-" * 50)
+    print(product_df, '\n')
 
     similarity_score = product_df.sum().sort_values(ascending=False)
-    print(similarity_score)
+    print("Similarity Score")
+    print("-" * 50)
+    print(similarity_score.to_string(), '\n')
 
 
 def weighted(x):
@@ -152,9 +194,8 @@ def main():
     # Print the positional index
     positional_index, normalized_doc_df = build_positional_index('docs')
 
-    q = "computer information"
+    q = "antony brutus"
     matched_docs, query_df = put_query(q, positional_index)
-
     similarity(query_df, normalized_doc_df, matched_docs)
 
 

@@ -19,7 +19,7 @@ def preprocessing(lines, dictionary):
     tokens = word_tokenize(lines)
     tokens = [t.lower() for t in tokens]  # add the lower-case tokens to the set
 
-    count_docs(tokens, dictionary)
+    count_docs(tokens, dictionary)  # count
     stemmed_tokens = [PorterStemmer().stem(token) for token in tokens]
     return stemmed_tokens
 
@@ -90,7 +90,6 @@ def tf(terms_dictionary, document_type):
     term_frequency_df.fillna(0, inplace=True)
     term_frequency_df = term_frequency_df.transpose()
 
-    #
     weighted_tf_df = term_frequency_df.applymap(weighted)
 
     doc_frequency = term_frequency_df.sum(axis=1)
@@ -140,7 +139,7 @@ def tf(terms_dictionary, document_type):
         return normalized_tf_idf
 
 
-def put_query(q, positional_index):
+def put_query(q, positional_index, normalized_doc_df):
     matches = [[] for i in range(10)]
     q = preprocessing(q, query_dictionary)
     for term in q:
@@ -157,8 +156,14 @@ def put_query(q, positional_index):
         if len(list) == len(q):
             matched_docs.append(document_names[pos])
 
-    query_df = tf(query_dictionary, 'Query')
-    return matched_docs, query_df
+    if not q or not matched_docs:  # if query is empty or no matched documents
+        print("Results: No matched documents")
+        print("Seems like you entered an invalid query, try again with different terms\n")
+    else:
+        query_df = tf(query_dictionary, 'Query')
+        similarity(query_df, normalized_doc_df, matched_docs)
+
+    return matched_docs
 
 
 def similarity(query_df, normalized_tf_idf, matched_docs):
@@ -194,10 +199,13 @@ def main():
     # Print the positional index
     positional_index, normalized_doc_df = build_positional_index('docs')
 
-    q = "antony brutus"
-    matched_docs, query_df = put_query(q, positional_index)
-    similarity(query_df, normalized_doc_df, matched_docs)
+    while True:
+        q = input("Enter your query: ")
+        matched_docs = put_query(q, positional_index, normalized_doc_df)
+
+        flag = input("Would you like to end the program? (Q to quit): ")
+        if flag.lower() == 'q':
+            break
 
 
-if __name__ == '__main__':
-    main()
+main()

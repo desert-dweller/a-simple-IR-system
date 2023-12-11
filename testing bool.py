@@ -26,39 +26,44 @@ def preprocessing(lines, dictionary):
 
 def count_docs(terms, dictionary):
     unique_terms.update(terms)
+
+    # count the term frequency in each document
     document_dictionary = dict(Counter(terms))
     dictionary.append(document_dictionary)
-    # for word in terms:
-    #     word_dictionary[word] += 1
 
 
 def read_file(file):
     with open(f'docs/{file}', 'r') as f:
         lines = f.read()
-        document_names.append(file[:-4])
+        document_names.append('d' + file[:-4])
         return lines
 
 
 def build_positional_index(path):
     # Initialize the positional index
     positional_index = {}
-    for doc_id, file in enumerate(natsorted(os.listdir(path))):
+    for doc_id, file in enumerate(natsorted(os.listdir(path)), start=0):
         lines = read_file(file)
         terms = preprocessing(lines, word_dictionary)
 
         for i, token in enumerate(terms):
             # create a new posting list if it isn't there yet
-            if token not in positional_index:
-                positional_index[token] = [0, {}]
+            # if token not in positional_index:
+            #     positional_index[token] = [0, {}]
+            positional_index.setdefault(token, [0, {}])
 
             # get the existing posting list of the term, ex: {0: [0]} for the term {'comput': {0: [0]}}
-            term_list = positional_index.get(token, {})
+            # term_list = positional_index.get(token, {})
+            term_list = positional_index[token]
+
             # get the existing position list if that term appeared in a document, ex: [] if the doc_id is 1
             term_positions = term_list[1].get(doc_id, [])
+            term_positions.append(i)
 
             # append the new position in that list, ex: it becomes 1: [0]
             positional_index[token][0] += 1
-            positional_index[token][1][doc_id] = term_positions + [i]
+            # positional_index[token][1][doc_id] = term_positions
+            term_list[1][doc_id] = term_positions
 
     print('\n', 'Unique Set of Terms', sep='')
     print("-" * 50)
@@ -69,26 +74,34 @@ def build_positional_index(path):
     print("Positional Index")
     print("-" * 50)
     print(temp.transpose(), '\n')
-    normalized_doc_df = tf(word_dictionary, 'Document')
+    normalized_doc_df = tf(positional_index, word_dictionary, 'Document')
     return positional_index, normalized_doc_df
 
 
-def tf(terms_dictionary, document_type):
+def tf(positional_index, terms_dictionary, document_type):
     global document_idf
+    global query_dictionary
     if document_type == 'Document':
         index = document_names
         N = len(document_names)
     else:
         index = ['tf-raw']
         N = len(terms_dictionary[0])
-
+        print(N)
     print('\n', "*" * 100, sep='')
     print("\t" * 10, document_type)
     print("*" * 100, '\n')
 
     term_frequency_df = pd.DataFrame(terms_dictionary, index=index)
+    # term_frequency_df = pd.DataFrame(terms_dictionary, columns=positional_index.index, index=index)
     term_frequency_df.fillna(0, inplace=True)
+
     term_frequency_df = term_frequency_df.transpose()
+    original_index = term_frequency_df.index
+    # l = []
+    # for token in original_index:
+    #     l.append(PorterStemmer().stem(token))
+    term_frequency_df.index = [PorterStemmer().stem(token) for token in original_index]
 
     weighted_tf_df = term_frequency_df.applymap(weighted)
 
@@ -97,6 +110,8 @@ def tf(terms_dictionary, document_type):
         idf = np.log10(N / doc_frequency)
     else:
         # get the idf values of the terms in the query
+        print(term_frequency_df.index)
+        print(document_idf)
         idf = document_idf.loc[term_frequency_df.index, 'idf']
 
     inverse_doc_freq = pd.concat([doc_frequency, idf], axis=1)
@@ -109,7 +124,9 @@ def tf(terms_dictionary, document_type):
     normalized_tf_idf = tf_idf / doc_length
 
     if document_type == 'Query':
-        query_df = pd.concat([term_frequency_df, weighted_tf_df, idf, term_frequency_df, normalized_tf_idf], axis=1)
+        # empty query dictionary incase of another incoming query
+        query_dictionary = []
+        query_df = pd.concat([term_frequency_df, weighted_tf_df, idf, tf_idf, normalized_tf_idf], axis=1)
         query_df.columns = ['tf-raw', 'weighted-tf', 'idf', 'tf-idf', 'normalized']
         print(f"Normalized {document_type} TF-IDF Matrix")
         print("-" * 50)
@@ -139,11 +156,31 @@ def tf(terms_dictionary, document_type):
         return normalized_tf_idf
 
 
+phrases = []
+
+
+def extract_boolean(query, booleans):
+    operators = ['OR', 'AND', 'NOT']
+    print(query)
+    global phrases
+    for op in operators:
+        if op in query:
+            phrase = query.split(op)
+            phrase = [p.strip() for p in phrase]
+            booleans.append(op)
+            print(phrases, booleans)
+            extract_boolean(phrase, booleans) or extract_boolean(phrase[1], booleans)
+        else:
+            phrases.append(query)
+
+    return phrases
+
+
 def put_query(q, positional_index, normalized_doc_df):
-    matches = [[] for i in range(10)]
+    matches = [[] for _ in range(10)]
+    # terms = extract_boolean(q)
     q = preprocessing(q, query_dictionary)
 
-    matched_docs = []
     for term in q:
         if term in positional_index.keys():
             for doc_id in positional_index[term][1].keys():
@@ -153,15 +190,18 @@ def put_query(q, positional_index, normalized_doc_df):
                 else:
                     matches[doc_id].append(positional_index[term][1][doc_id][0])
 
-    for pos, list in enumerate(matches, start=0):
-        if len(list) == len(q):
-            matched_docs.append(document_names[pos])
+    matched_docs = []
+    for doc_id, match in enumerate(matches):
+        if len(match) == len(q):
+            matched_docs.append(document_names[doc_id])
 
-    if not q or not matched_docs:  # if query is empty or no matched documents
+    if not q:  # if query is empty
+        print("Seems like you entered an empty query")
+    elif not matched_docs:  # or no matched documents
         print("Results: No matched documents")
-        print("Seems like you entered an invalid query, try again with different terms\n")
+        print("Try again with different terms\n")
     else:
-        query_df = tf(query_dictionary, 'Query')
+        query_df = tf(positional_index, query_dictionary, 'Query')
         similarity(query_df, normalized_doc_df, matched_docs)
 
     return matched_docs
@@ -196,12 +236,12 @@ def weighted(x):
     return 0
 
 
-def main():
-    # Print the positional index
+def main():  # Print the positional index
     positional_index, normalized_doc_df = build_positional_index('docs')
 
     while True:
         q = input("Enter your query: ")
+        # print(extract_boolean(q, []))
         matched_docs = put_query(q, positional_index, normalized_doc_df)
 
         flag = input("Would you like to end the program? (Q to quit): ")

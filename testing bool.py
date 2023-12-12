@@ -78,6 +78,111 @@ def build_positional_index(path):
     return positional_index, normalized_doc_df
 
 
+def extract_boolean(query, booleans):
+    operators = ['OR', 'AND', 'NOT']
+    print(query)
+    global phrases
+    for op in operators:
+        if op in query:
+            phrase = query.split(op)
+            phrase = [p.strip() for p in phrase]
+            booleans.append(op)
+            print(phrases, booleans)
+            extract_boolean(phrase, booleans) or extract_boolean(phrase[1], booleans)
+        else:
+            phrases.append(query)
+
+    return phrases
+
+
+def phrase_query(q, positional_index, normalized_doc_df):
+    matches = [[] for _ in range(10)]
+    # terms = extract_boolean(q)
+    q = preprocessing(q, query_dictionary)
+
+    for term in q:
+        if term in positional_index.keys():
+            for doc_id in positional_index[term][1].keys():
+                if matches[doc_id]:
+                    if matches[doc_id][-1] == positional_index[term][1][doc_id][0] - 1:
+                        matches[doc_id].append(positional_index[term][1][doc_id][0])
+                else:
+                    matches[doc_id].append(positional_index[term][1][doc_id][0])
+
+    matched_docs = []
+    for doc_id, match in enumerate(matches):
+        if len(match) == len(q):
+            matched_docs.append(document_names[doc_id])
+    return matched_docs
+
+
+def split_boolean_query(query):
+    operators = ['NOT', 'AND', 'OR']
+    phrases = []
+    operator_stack = []
+    current_phrase = []
+
+    for word in query.split():
+        if word not in operators:
+            current_phrase.append(word)
+        else:
+            if current_phrase:
+                phrases.append(" ".join(current_phrase))
+                current_phrase.clear()
+            if word == 'NOT':
+                current_phrase.append(word)
+            else:
+                operator_stack.append(word)
+        print(current_phrase)
+        print(phrases)
+    if current_phrase:
+        phrases.append(" ".join(current_phrase))
+
+    return phrases, operator_stack
+
+
+def put_query(q, positional_index, normalized_doc_df):
+    # Split the boolean query into individual phrases and operators
+    phrases, operators = split_boolean_query(q)
+    print(phrases, operators)
+    # Initialize an empty set to store matched documents
+    matched_docs = set()
+
+    # Perform phrase queries and handle NOT operators
+    for i, phrase in enumerate(phrases):
+        is_not_term = False
+        if phrase.startswith('NOT'):
+            is_not_term = True
+            phrase = phrase[4:]
+
+        phrase_matches = set(phrase_query(phrase, positional_index, normalized_doc_df))
+        print(phrase_matches)
+        # Apply NOT operator if needed
+        if is_not_term:
+            phrase_matches = set(document_names) - phrase_matches
+            matched_docs |= phrase_matches  # perform operators after first phrase
+        elif operators and i != 0:
+            operator = operators.pop(0)
+            if operator == 'AND':
+                matched_docs &= phrase_matches
+            elif operator == 'OR':
+                matched_docs |= phrase_matches
+        else:
+            matched_docs = set(phrase_matches)
+    print(matched_docs)
+    if not q:  # if query is empty
+        print("Seems like you entered an empty query")
+    elif not matched_docs:  # or no matched documents
+        print("Results: No matched documents")
+        print("Try again with different terms\n")
+    else:
+        matched_docs = list(matched_docs)
+        query_df = tf(positional_index, query_dictionary, 'Query')
+        similarity(query_df, normalized_doc_df, matched_docs)
+
+    return matched_docs
+
+
 def tf(positional_index, terms_dictionary, document_type):
     global document_idf
     global query_dictionary
@@ -87,11 +192,17 @@ def tf(positional_index, terms_dictionary, document_type):
     else:
         index = ['tf-raw']
         N = len(terms_dictionary[0])
-        print(N)
+        print(terms_dictionary)
+        t = {}
+        for query_phrase in terms_dictionary:
+            t.update(query_phrase)
+        terms_dictionary = [t]
+
     print('\n', "*" * 100, sep='')
     print("\t" * 10, document_type)
     print("*" * 100, '\n')
 
+    print(len(terms_dictionary))
     term_frequency_df = pd.DataFrame(terms_dictionary, index=index)
     # term_frequency_df = pd.DataFrame(terms_dictionary, columns=positional_index.index, index=index)
     term_frequency_df.fillna(0, inplace=True)
@@ -156,55 +267,10 @@ def tf(positional_index, terms_dictionary, document_type):
         return normalized_tf_idf
 
 
-phrases = []
-
-
-def extract_boolean(query, booleans):
-    operators = ['OR', 'AND', 'NOT']
-    print(query)
-    global phrases
-    for op in operators:
-        if op in query:
-            phrase = query.split(op)
-            phrase = [p.strip() for p in phrase]
-            booleans.append(op)
-            print(phrases, booleans)
-            extract_boolean(phrase, booleans) or extract_boolean(phrase[1], booleans)
-        else:
-            phrases.append(query)
-
-    return phrases
-
-
-def put_query(q, positional_index, normalized_doc_df):
-    matches = [[] for _ in range(10)]
-    # terms = extract_boolean(q)
-    q = preprocessing(q, query_dictionary)
-
-    for term in q:
-        if term in positional_index.keys():
-            for doc_id in positional_index[term][1].keys():
-                if matches[doc_id]:
-                    if matches[doc_id][-1] == positional_index[term][1][doc_id][0] - 1:
-                        matches[doc_id].append(positional_index[term][1][doc_id][0])
-                else:
-                    matches[doc_id].append(positional_index[term][1][doc_id][0])
-
-    matched_docs = []
-    for doc_id, match in enumerate(matches):
-        if len(match) == len(q):
-            matched_docs.append(document_names[doc_id])
-
-    if not q:  # if query is empty
-        print("Seems like you entered an empty query")
-    elif not matched_docs:  # or no matched documents
-        print("Results: No matched documents")
-        print("Try again with different terms\n")
-    else:
-        query_df = tf(positional_index, query_dictionary, 'Query')
-        similarity(query_df, normalized_doc_df, matched_docs)
-
-    return matched_docs
+def weighted(x):
+    if x > 0:
+        return np.log10(x) + 1
+    return 0
 
 
 def similarity(query_df, normalized_tf_idf, matched_docs):
@@ -230,18 +296,11 @@ def similarity(query_df, normalized_tf_idf, matched_docs):
     print(similarity_score.to_string(), '\n')
 
 
-def weighted(x):
-    if x > 0:
-        return np.log10(x) + 1
-    return 0
-
-
 def main():  # Print the positional index
     positional_index, normalized_doc_df = build_positional_index('docs')
 
     while True:
         q = input("Enter your query: ")
-        # print(extract_boolean(q, []))
         matched_docs = put_query(q, positional_index, normalized_doc_df)
 
         flag = input("Would you like to end the program? (Q to quit): ")

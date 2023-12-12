@@ -60,8 +60,11 @@ def build_positional_index(path):
             term_positions = term_list[1].get(doc_id, [])
             term_positions.append(i)
 
-            # append the new position in that list, ex: it becomes 1: [0]
-            positional_index[token][0] += 1
+            # increment the document frequency by 1 if the document isn't in the posting list yet
+            if doc_id not in positional_index[token][1]:
+                positional_index[token][0] += 1
+
+            # append the new positions to the posting list, ex: it becomes 1: [0]
             # positional_index[token][1][doc_id] = term_positions
             term_list[1][doc_id] = term_positions
 
@@ -74,30 +77,12 @@ def build_positional_index(path):
     print("Positional Index")
     print("-" * 50)
     print(temp.transpose(), '\n')
-    normalized_doc_df = tf(positional_index, word_dictionary, 'Document')
+    normalized_doc_df = tf(word_dictionary, 'Document')
     return positional_index, normalized_doc_df
-
-
-def extract_boolean(query, booleans):
-    operators = ['OR', 'AND', 'NOT']
-    print(query)
-    global phrases
-    for op in operators:
-        if op in query:
-            phrase = query.split(op)
-            phrase = [p.strip() for p in phrase]
-            booleans.append(op)
-            print(phrases, booleans)
-            extract_boolean(phrase, booleans) or extract_boolean(phrase[1], booleans)
-        else:
-            phrases.append(query)
-
-    return phrases
 
 
 def phrase_query(q, positional_index, normalized_doc_df):
     matches = [[] for _ in range(10)]
-    # terms = extract_boolean(q)
     q = preprocessing(q, query_dictionary)
 
     for term in q:
@@ -142,13 +127,13 @@ def split_boolean_query(query):
 
 
 def put_query(q, positional_index, normalized_doc_df):
-    # Split the boolean query into individual phrases and operators
+    # split the boolean query into phrases and operators
     phrases, operators = split_boolean_query(q)
     print(phrases, operators)
     # Initialize an empty set to store matched documents
     matched_docs = set()
 
-    # Perform phrase queries and handle NOT operators
+    # perform phrase queries and handle NOT operators
     for i, phrase in enumerate(phrases):
         is_not_term = False
         if phrase.startswith('NOT'):
@@ -156,34 +141,35 @@ def put_query(q, positional_index, normalized_doc_df):
             phrase = phrase[4:]
 
         phrase_matches = set(phrase_query(phrase, positional_index, normalized_doc_df))
-        print(phrase_matches)
         # Apply NOT operator if needed
         if is_not_term:
             phrase_matches = set(document_names) - phrase_matches
-            matched_docs |= phrase_matches  # perform operators after first phrase
-        elif operators and i != 0:
+        print(phrase, phrase_matches)
+        if operators and i != 0:  # perform operators after first phrase
             operator = operators.pop(0)
+            print(operator)
             if operator == 'AND':
                 matched_docs &= phrase_matches
             elif operator == 'OR':
                 matched_docs |= phrase_matches
         else:
             matched_docs = set(phrase_matches)
-    print(matched_docs)
+        print(matched_docs)
+
     if not q:  # if query is empty
         print("Seems like you entered an empty query")
     elif not matched_docs:  # or no matched documents
         print("Results: No matched documents")
         print("Try again with different terms\n")
     else:
-        matched_docs = list(matched_docs)
-        query_df = tf(positional_index, query_dictionary, 'Query')
+        matched_docs = natsorted(list(matched_docs))
+        query_df = tf(query_dictionary, 'Query')
         similarity(query_df, normalized_doc_df, matched_docs)
 
     return matched_docs
 
 
-def tf(positional_index, terms_dictionary, document_type):
+def tf(terms_dictionary, document_type):
     global document_idf
     global query_dictionary
     if document_type == 'Document':
@@ -213,23 +199,27 @@ def tf(positional_index, terms_dictionary, document_type):
     # for token in original_index:
     #     l.append(PorterStemmer().stem(token))
     term_frequency_df.index = [PorterStemmer().stem(token) for token in original_index]
-
+    print(term_frequency_df)
     weighted_tf_df = term_frequency_df.applymap(weighted)
 
     doc_frequency = term_frequency_df.sum(axis=1)
     if document_type == 'Document':
         idf = np.log10(N / doc_frequency)
     else:
+        # removing all the terms that don't occur in documents, otherwise it ruins the dictionaries
+        term_index = [term for term in term_frequency_df.index if term in document_idf.index]
+        print(term_index)
+
         # get the idf values of the terms in the query
         print(term_frequency_df.index)
         print(document_idf)
-        idf = document_idf.loc[term_frequency_df.index, 'idf']
-
+        idf = document_idf.loc[term_index, 'idf']
+    print(idf)
     inverse_doc_freq = pd.concat([doc_frequency, idf], axis=1)
     inverse_doc_freq.columns = ['df', 'idf']
-
-    tf_idf = term_frequency_df.multiply(idf, axis=0)
-
+    tf_idf = term_frequency_df.multiply(inverse_doc_freq['idf'], axis=0)
+    tf_idf.fillna(0.0, inplace=True)
+    print("tf-idf", tf_idf)
     doc_length = np.sqrt((tf_idf ** 2).sum())
 
     normalized_tf_idf = tf_idf / doc_length
@@ -277,8 +267,13 @@ def similarity(query_df, normalized_tf_idf, matched_docs):
     print('\n', "*" * 100, sep='')
     print("\t" * 10, "Post-Query")
     print("*" * 100, '\n')
+    # removing all the terms that don't occur in documents, otherwise it ruins the dictionaries
 
-    query_terms = query_df.index
+    query_terms = [term for term in query_df.index if term in document_idf.index]
+    print(query_terms)
+    print(matched_docs)
+    print(normalized_tf_idf.loc[:, matched_docs])
+
     matched_docs_df = normalized_tf_idf.loc[query_terms, matched_docs]
     print("Matched Documents")
     print("-" * 50)
@@ -286,6 +281,7 @@ def similarity(query_df, normalized_tf_idf, matched_docs):
 
     query_normalized = query_df.loc[:, 'normalized']
     product_df = matched_docs_df.multiply(query_normalized, axis=0)
+    product_df.fillna(0.0, inplace=True)
     print("Product (Query * Matched Documents) Matrix")
     print("-" * 50)
     print(product_df, '\n')

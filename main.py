@@ -101,7 +101,7 @@ def tf(terms_dictionary, document_type):
 
     inverse_doc_freq = pd.concat([doc_frequency, idf], axis=1)
     inverse_doc_freq.columns = ['df', 'idf']
-
+    print(term_frequency_df)
     tf_idf = term_frequency_df.multiply(idf, axis=0)
 
     doc_length = np.sqrt((tf_idf ** 2).sum())
@@ -174,6 +174,7 @@ def similarity(query_df, normalized_tf_idf, matched_docs):
 
     query_terms = query_df.index
     matched_docs_df = normalized_tf_idf.loc[query_terms, matched_docs]
+    print(matched_docs_df)
     print("Matched Documents")
     print("-" * 50)
     print(matched_docs_df.columns.values, '\n')
